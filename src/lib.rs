@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use chumsky::{prelude::*, text::Char};
 
 // A few type definitions to be used by our parsers below
@@ -14,16 +16,29 @@ pub fn lexer<'src>()
                 .to_slice()
                 .map(Token::DocCommentLine),
         )
-        .labelled("///").boxed();
+        .labelled("///")
+        .boxed();
 
-    let ident_string = any()
-        .filter(|c: &char| c.is_ident_start() || *c == '_')
-        .then(
+    let ident_string = choice((
+        just("r#").ignore_then(
             any()
-                .filter(|c: &char| c.is_ident_continue() || *c == '_' || *c == '-')
-                .repeated(),
-        )
-        .to_slice().boxed();
+                .filter(|c: &char| c.is_ident_start() || *c == '_')
+                .then(
+                    any()
+                        .filter(|c: &char| c.is_ident_continue() || *c == '_' || *c == '-')
+                        .repeated(),
+                ),
+        ),
+        any()
+            .filter(|c: &char| c.is_ident_start() || *c == '_')
+            .then(
+                any()
+                    .filter(|c: &char| c.is_ident_continue() || *c == '_' || *c == '-')
+                    .repeated(),
+            ),
+    ))
+    .to_slice()
+    .boxed();
 
     // A parser for identifiers and keywords
     let ident = ident_string.map(|ident: &str| match ident {
@@ -34,32 +49,131 @@ pub fn lexer<'src>()
         "fieldset" => Token::FieldSet,
         "enum" => Token::Enum,
         "extern" => Token::Extern,
-        _ => Token::Ident(ident),
+        "field" => Token::Field,
+        ident if ident.starts_with("r#") => Token::Ident(ident.strip_prefix("r#").unwrap()),
+        ident => Token::Ident(ident),
     });
 
-    let ctrl = one_of("()[]{}<>,?:").map(Token::Ctrl);
-    let arrow = just("->").map(|_| Token::Arrow).labelled("->");
-    let equals = just('=').map(|_| Token::Equals);
+    let ctrl = one_of("[]{}<>,:=").map(|c| {
+        Token::Ctrl(match c {
+            '[' => Control::BracketOpen,
+            ']' => Control::BracketClose,
+            '{' => Control::CurlyOpen,
+            '}' => Control::CurlyClose,
+            '<' => Control::AngleOpen,
+            '>' => Control::AngleClose,
+            ',' => Control::Comma,
+            ':' => Control::Colon,
+            '=' => Control::Equals,
+            _ => unreachable!(),
+        })
+    });
+    let arrow = just("->")
+        .map(|_| Token::Ctrl(Control::Arrow))
+        .labelled("->");
+    let r#try = just("try").map(|_| Token::Try).labelled("try");
     let by = just("by").map(|_| Token::By).labelled("by");
+    let r#as = just("as").map(|_| Token::As).labelled("as");
+    let allow = just("allow").map(|_| Token::Allow).labelled("allow");
+    let default = just("default").map(|_| Token::Default).labelled("default");
+    let catch_all = just("catch-all")
+        .map(|_| Token::CatchAll)
+        .labelled("catch-all");
+
+    let access = choice((
+        just("RW").map(|_| Token::Access(Access::RW)).labelled("RW"),
+        just("RO").map(|_| Token::Access(Access::RO)).labelled("RO"),
+        just("WO").map(|_| Token::Access(Access::WO)).labelled("WO"),
+    ));
+
+    let byte_order = choice((
+        just("BE")
+            .map(|_| Token::ByteOrder(ByteOrder::BE))
+            .labelled("BE"),
+        just("LE")
+            .map(|_| Token::ByteOrder(ByteOrder::LE))
+            .labelled("LE"),
+    ));
+
+    let bit_order = choice((
+        just("lsb0")
+            .map(|_| Token::BitOrder(BitOrder::Lsb0))
+            .labelled("lsb0"),
+        just("msb0")
+            .map(|_| Token::BitOrder(BitOrder::Msb0))
+            .labelled("msb0"),
+    ));
 
     // TODO: Add underscore support in the middle of numbers
     let positive_number = choice((
-        text::int(10)
-            .map(|s: &str| i128::from_str_radix(s, 10).unwrap())
-            .then_ignore(none_of("xbo")),
         just("0x").ignore_then(text::int(16).map(|s: &str| i128::from_str_radix(s, 16).unwrap())),
         just("0b").ignore_then(text::int(2).map(|s: &str| i128::from_str_radix(s, 2).unwrap())),
         just("0o").ignore_then(text::int(8).map(|s: &str| i128::from_str_radix(s, 8).unwrap())),
+        text::int(10).map(|s: &str| i128::from_str_radix(s, 10).unwrap()),
     ))
-    .labelled("number").boxed();
+    .labelled("number")
+    .boxed();
     let num = just('-')
         .map(|_| -1i128)
         .or(empty().map(|_| 1))
         .then(positive_number)
         .map(|(pos, num)| Token::Num(pos * num))
-        .labelled("number").boxed();
+        .labelled("number")
+        .boxed();
 
-    let token = choice((doc_comment, ident, ctrl, arrow, equals, by, num));
+    let base_type = choice((
+        just("uint")
+            .map(|_| Token::BaseType(BaseType::U8))
+            .labelled("uint"),
+        just("u8")
+            .map(|_| Token::BaseType(BaseType::U8))
+            .labelled("u8"),
+        just("u16")
+            .map(|_| Token::BaseType(BaseType::U8))
+            .labelled("u16"),
+        just("u32")
+            .map(|_| Token::BaseType(BaseType::U8))
+            .labelled("u32"),
+        just("u64")
+            .map(|_| Token::BaseType(BaseType::U8))
+            .labelled("u64"),
+        just("int")
+            .map(|_| Token::BaseType(BaseType::U8))
+            .labelled("int"),
+        just("i8")
+            .map(|_| Token::BaseType(BaseType::U8))
+            .labelled("i8"),
+        just("i16")
+            .map(|_| Token::BaseType(BaseType::U8))
+            .labelled("i16"),
+        just("i32")
+            .map(|_| Token::BaseType(BaseType::U8))
+            .labelled("i32"),
+        just("i64")
+            .map(|_| Token::BaseType(BaseType::U8))
+            .labelled("i64"),
+        just("bool")
+            .map(|_| Token::BaseType(BaseType::U8))
+            .labelled("bool"),
+    ));
+
+    let token = choice((
+        doc_comment,
+        ctrl,
+        arrow,
+        r#try,
+        r#as,
+        by,
+        num,
+        access,
+        byte_order,
+        bit_order,
+        base_type,
+        allow,
+        default,
+        catch_all,
+        ident,
+    ));
 
     let comment = just("//")
         .then_ignore(just("/").not())
@@ -89,20 +203,219 @@ pub enum Token<'src> {
     FieldSet,
     Enum,
     Extern,
+    Field,
     // TODO: Add config options, register options, etc
     Ident(&'src str),
-    Ctrl(char),
-    /// `->`
-    Arrow,
-    /// `=`
-    Equals,
+    Ctrl(Control),
     By,
+    Try,
+    As,
+    Allow,
+    Default,
+    CatchAll,
     Num(i128),
+    Access(Access),
+    ByteOrder(ByteOrder),
+    BitOrder(BitOrder),
+    BaseType(BaseType),
     Error,
+}
+
+impl<'src> Display for Token<'src> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Token::DocCommentLine(line) => write!(f, "/// {line}"),
+            Token::Device => write!(f, "device"),
+            Token::Register => write!(f, "register"),
+            Token::Command => write!(f, "command"),
+            Token::Buffer => write!(f, "buffer"),
+            Token::FieldSet => write!(f, "fieldset"),
+            Token::Enum => write!(f, "enum"),
+            Token::Extern => write!(f, "extern"),
+            Token::Field => write!(f, "field"),
+            Token::Ident(ident) => write!(f, "#{ident}"),
+            Token::Ctrl(val) => val.fmt(f),
+            Token::Try => write!(f, "try"),
+            Token::By => write!(f, "by"),
+            Token::As => write!(f, "as"),
+            Token::Num(n) => write!(f, "{n}"),
+            Token::Error => write!(f, "ERROR"),
+            Token::Access(val) => val.fmt(f),
+            Token::ByteOrder(val) => val.fmt(f),
+            Token::BitOrder(val) => val.fmt(f),
+            Token::BaseType(val) => val.fmt(f),
+            Token::Allow => write!(f, "allow"),
+            Token::Default => write!(f, "default"),
+            Token::CatchAll => write!(f, "catch-all"),
+        }
+    }
+}
+
+impl<'src> Token<'src> {
+    /// New line before, new line after, indent change
+    fn get_print_format(&self) -> (bool, bool, i32) {
+        match self {
+            Token::DocCommentLine(_) | Token::Ctrl(Control::Comma) => (false, true, 0),
+            Token::Ctrl(Control::CurlyOpen) | Token::Ctrl(Control::BracketOpen) => (false, true, 1),
+            Token::Ctrl(Control::CurlyClose) | Token::Ctrl(Control::BracketClose) => {
+                (true, false, -1)
+            }
+            _ => (false, false, 0),
+        }
+    }
+
+    pub fn formatted_print<'a, I: Iterator<Item = &'a Token<'src>>>(
+        stream: &mut impl std::io::Write,
+        tokens: I,
+    ) -> std::io::Result<()>
+    where
+        'src: 'a,
+    {
+        let mut indent = 0i32;
+        for token in tokens {
+            let (newline_before, newline_after, indent_change) = token.get_print_format();
+
+            indent += indent_change;
+            if newline_before {
+                write!(stream, "\n{:width$}", "", width = indent as usize * 4)?;
+            }
+
+            write!(stream, "{token} ")?;
+
+            if newline_after {
+                write!(stream, "\n{:width$}", "", width = indent as usize * 4)?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub enum Control {
+    CurlyOpen,
+    CurlyClose,
+    BracketOpen,
+    BracketClose,
+    AngleOpen,
+    AngleClose,
+    Colon,
+    Comma,
+    Equals,
+    Arrow,
+}
+
+impl Display for Control {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Control::CurlyOpen => "{",
+            Control::CurlyClose => "}",
+            Control::BracketOpen => "[",
+            Control::BracketClose => "]",
+            Control::AngleOpen => "<",
+            Control::AngleClose => ">",
+            Control::Colon => ":",
+            Control::Comma => ",",
+            Control::Equals => "=",
+            Control::Arrow => "->",
+        };
+
+        write!(f, "{s}")
+    }
+}
+
+#[derive(Debug)]
+pub enum Access {
+    RW,
+    RO,
+    WO,
+}
+
+impl Display for Access {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Access::RW => "RW",
+            Access::RO => "RO",
+            Access::WO => "WO",
+        };
+
+        write!(f, "{s}")
+    }
+}
+
+#[derive(Debug)]
+pub enum ByteOrder {
+    BE,
+    LE,
+}
+
+impl Display for ByteOrder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            ByteOrder::BE => "BE",
+            ByteOrder::LE => "LE",
+        };
+
+        write!(f, "{s}")
+    }
+}
+
+#[derive(Debug)]
+pub enum BitOrder {
+    Lsb0,
+    Msb0,
+}
+
+impl Display for BitOrder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            BitOrder::Lsb0 => "lsb0",
+            BitOrder::Msb0 => "msb0",
+        };
+
+        write!(f, "{s}")
+    }
+}
+
+#[derive(Debug)]
+pub enum BaseType {
+    Uint,
+    U8,
+    U16,
+    U32,
+    U64,
+    Int,
+    I8,
+    I16,
+    I32,
+    I64,
+    Bool,
+}
+
+impl Display for BaseType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            BaseType::Uint => "uint",
+            BaseType::U8 => "u8",
+            BaseType::U16 => "u16",
+            BaseType::U32 => "u32",
+            BaseType::U64 => "u64",
+            BaseType::Int => "int",
+            BaseType::I8 => "i8",
+            BaseType::I16 => "i16",
+            BaseType::I32 => "i32",
+            BaseType::I64 => "i64",
+            BaseType::Bool => "bool",
+        };
+
+        write!(f, "{s}")
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::io::stdout;
+
     use ariadne::{Label, Report, Source};
 
     use super::*;
@@ -112,12 +425,13 @@ mod tests {
 /// Doc comment for Foo
 
 
+// Everything separately specified. Inline externs, enums and fieldsets are possible too
 device Foo {
     register-address-type: u8,
 
     register Bar {
         address: 0,
-        repeat: <10 by -2>,
+        repeat: <10 by 2>,
         repeat: <MyEnum by 2>, // Or repeat with enum
         reset: 0x1234,
         reset: [0x12, 0x34], // Or reset with array
@@ -127,22 +441,22 @@ device Foo {
         fields: MyFs
     },
 
-    enum Purr : u8 {
+    enum Purr -> u8 {
         A,
         B = 3:1,
         C,
         D = default 5,
-        E = catch-all 6,
+        r#BE = catch-all 6,
     },
 
-    extern Rah : u64,
+    extern Rah -> u64,
 
     fieldset MyFs {
         size-bits: 16,
         bit-overlap: allow,
 
-        xena 7:4 RW <3 by 3> -> uint as Purr?,
-        quux 3:0 RO -> uint,
+        field xena 7:4 RW <3 by 3> -> uint as try Purr,
+        field quux 3:0 RO -> uint,
     }
 }";
 
@@ -171,6 +485,9 @@ device Foo {
             eprintln!("{}", std::str::from_utf8(&error_string).unwrap())
         }
 
-        println!("{:?}", output.output());
+        if let Some(output) = output.output() {
+            let mut stdout = stdout().lock();
+            Token::formatted_print(&mut stdout, output.iter().map(|(token, _)| token)).unwrap();
+        }
     }
 }
