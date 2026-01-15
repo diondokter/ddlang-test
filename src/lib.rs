@@ -41,18 +41,12 @@ pub fn lexer<'src>()
     .boxed();
 
     // A parser for identifiers and keywords
-    let ident = ident_string.map(|ident: &str| match ident {
-        "device" => Token::Device,
-        "register" => Token::Register,
-        "command" => Token::Command,
-        "buffer" => Token::Buffer,
-        "fieldset" => Token::FieldSet,
-        "enum" => Token::Enum,
-        "extern" => Token::Extern,
-        "field" => Token::Field,
-        ident if ident.starts_with("r#") => Token::Ident(ident.strip_prefix("r#").unwrap()),
-        ident => Token::Ident(ident),
-    });
+    let ident = ident_string
+        .map(|ident: &str| match ident {
+            ident if ident.starts_with("r#") => Token::Ident(ident.strip_prefix("r#").unwrap()),
+            ident => Token::Ident(ident),
+        })
+        .labelled("identifier");
 
     let ctrl = one_of("[]{}<>,:=").map(|c| {
         Token::Ctrl(match c {
@@ -68,39 +62,35 @@ pub fn lexer<'src>()
             _ => unreachable!(),
         })
     });
-    let arrow = just("->")
-        .map(|_| Token::Ctrl(Control::Arrow))
-        .labelled("->");
-    let r#try = just("try").map(|_| Token::Try).labelled("try");
-    let by = just("by").map(|_| Token::By).labelled("by");
-    let r#as = just("as").map(|_| Token::As).labelled("as");
-    let allow = just("allow").map(|_| Token::Allow).labelled("allow");
-    let default = just("default").map(|_| Token::Default).labelled("default");
-    let catch_all = just("catch-all")
-        .map(|_| Token::CatchAll)
-        .labelled("catch-all");
+    let arrow = just("->").to(Token::Ctrl(Control::Arrow)).labelled("->");
+    let r#try = just("try").to(Token::Try).labelled("try");
+    let by = just("by").to(Token::By).labelled("by");
+    let r#as = just("as").to(Token::As).labelled("as");
+    let allow = just("allow").to(Token::Allow).labelled("allow");
+    let default = just("default").to(Token::Default).labelled("default");
+    let catch_all = just("catch-all").to(Token::CatchAll).labelled("catch-all");
 
     let access = choice((
-        just("RW").map(|_| Token::Access(Access::RW)).labelled("RW"),
-        just("RO").map(|_| Token::Access(Access::RO)).labelled("RO"),
-        just("WO").map(|_| Token::Access(Access::WO)).labelled("WO"),
+        just("RW").to(Token::Access(Access::RW)).labelled("RW"),
+        just("RO").to(Token::Access(Access::RO)).labelled("RO"),
+        just("WO").to(Token::Access(Access::WO)).labelled("WO"),
     ));
 
     let byte_order = choice((
         just("BE")
-            .map(|_| Token::ByteOrder(ByteOrder::BE))
+            .to(Token::ByteOrder(ByteOrder::BE))
             .labelled("BE"),
         just("LE")
-            .map(|_| Token::ByteOrder(ByteOrder::LE))
+            .to(Token::ByteOrder(ByteOrder::LE))
             .labelled("LE"),
     ));
 
     let bit_order = choice((
         just("lsb0")
-            .map(|_| Token::BitOrder(BitOrder::Lsb0))
+            .to(Token::BitOrder(BitOrder::Lsb0))
             .labelled("lsb0"),
         just("msb0")
-            .map(|_| Token::BitOrder(BitOrder::Msb0))
+            .to(Token::BitOrder(BitOrder::Msb0))
             .labelled("msb0"),
     ));
 
@@ -114,8 +104,8 @@ pub fn lexer<'src>()
     .labelled("number")
     .boxed();
     let num = just('-')
-        .map(|_| -1i128)
-        .or(empty().map(|_| 1))
+        .to(-1i128)
+        .or(empty().to(1))
         .then(positive_number)
         .map(|(pos, num)| Token::Num(pos * num))
         .labelled("number")
@@ -123,37 +113,33 @@ pub fn lexer<'src>()
 
     let base_type = choice((
         just("uint")
-            .map(|_| Token::BaseType(BaseType::U8))
+            .to(Token::BaseType(BaseType::U8))
             .labelled("uint"),
-        just("u8")
-            .map(|_| Token::BaseType(BaseType::U8))
-            .labelled("u8"),
+        just("u8").to(Token::BaseType(BaseType::U8)).labelled("u8"),
         just("u16")
-            .map(|_| Token::BaseType(BaseType::U8))
+            .to(Token::BaseType(BaseType::U8))
             .labelled("u16"),
         just("u32")
-            .map(|_| Token::BaseType(BaseType::U8))
+            .to(Token::BaseType(BaseType::U8))
             .labelled("u32"),
         just("u64")
-            .map(|_| Token::BaseType(BaseType::U8))
+            .to(Token::BaseType(BaseType::U8))
             .labelled("u64"),
         just("int")
-            .map(|_| Token::BaseType(BaseType::U8))
+            .to(Token::BaseType(BaseType::U8))
             .labelled("int"),
-        just("i8")
-            .map(|_| Token::BaseType(BaseType::U8))
-            .labelled("i8"),
+        just("i8").to(Token::BaseType(BaseType::U8)).labelled("i8"),
         just("i16")
-            .map(|_| Token::BaseType(BaseType::U8))
+            .to(Token::BaseType(BaseType::U8))
             .labelled("i16"),
         just("i32")
-            .map(|_| Token::BaseType(BaseType::U8))
+            .to(Token::BaseType(BaseType::U8))
             .labelled("i32"),
         just("i64")
-            .map(|_| Token::BaseType(BaseType::U8))
+            .to(Token::BaseType(BaseType::U8))
             .labelled("i64"),
         just("bool")
-            .map(|_| Token::BaseType(BaseType::U8))
+            .to(Token::BaseType(BaseType::U8))
             .labelled("bool"),
     ));
 
@@ -182,29 +168,27 @@ pub fn lexer<'src>()
         .labelled("//");
 
     token
+        .clone()
         .map_with(|tok, e| (tok, e.span()))
         .padded_by(comment.repeated())
         .padded()
-        // If we encounter an error, skip and attempt to lex the next character as a token instead
-        .recover_with(skip_then_retry_until(any().ignored(), end()))
+        .recover_with(via_parser(
+            any()
+                .filter(|c: &char| !c.is_whitespace())
+                .and_is(token.not())
+                .repeated()
+                .at_least(1)
+                .map_with(|_, e| (Token::Error, e.span())),
+        ))
         .repeated()
         .collect()
         .then_ignore(comment.repeated())
         .then_ignore(end())
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Token<'src> {
     DocCommentLine(&'src str),
-    Device,
-    Register,
-    Command,
-    Buffer,
-    FieldSet,
-    Enum,
-    Extern,
-    Field,
-    // TODO: Add config options, register options, etc
     Ident(&'src str),
     Ctrl(Control),
     By,
@@ -225,14 +209,6 @@ impl<'src> Display for Token<'src> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Token::DocCommentLine(line) => write!(f, "/// {line}"),
-            Token::Device => write!(f, "device"),
-            Token::Register => write!(f, "register"),
-            Token::Command => write!(f, "command"),
-            Token::Buffer => write!(f, "buffer"),
-            Token::FieldSet => write!(f, "fieldset"),
-            Token::Enum => write!(f, "enum"),
-            Token::Extern => write!(f, "extern"),
-            Token::Field => write!(f, "field"),
             Token::Ident(ident) => write!(f, "#{ident}"),
             Token::Ctrl(val) => val.fmt(f),
             Token::Try => write!(f, "try"),
@@ -291,7 +267,7 @@ impl<'src> Token<'src> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Control {
     CurlyOpen,
     CurlyClose,
@@ -324,7 +300,7 @@ impl Display for Control {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Access {
     RW,
     RO,
@@ -343,7 +319,7 @@ impl Display for Access {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ByteOrder {
     BE,
     LE,
@@ -360,7 +336,7 @@ impl Display for ByteOrder {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum BitOrder {
     Lsb0,
     Msb0,
@@ -377,7 +353,7 @@ impl Display for BitOrder {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum BaseType {
     Uint,
     U8,
@@ -439,7 +415,7 @@ device Foo {
         access: RW,
 
         fields: MyFs
-    },
+    }(),
 
     enum Purr -> u8 {
         A,
