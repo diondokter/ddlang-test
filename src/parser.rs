@@ -1,4 +1,7 @@
-use crate::lexer::{Control, Token};
+use crate::{
+    Access, BaseType, BitOrder, ByteOrder,
+    lexer::{Control, Token},
+};
 use chumsky::{input::ValueInput, prelude::*};
 
 pub type Span = SimpleSpan;
@@ -13,8 +16,22 @@ pub struct Node<'src> {
     pub doc_comments: Vec<&'src str>,
     pub r#type: Ident<'src>,
     pub name: Ident<'src>,
+    pub type_specifier: Option<TypeSpecifier<'src>>,
     pub properties: Vec<Property<'src>>,
     pub sub_nodes: Vec<Node<'src>>,
+}
+
+#[derive(Debug)]
+pub struct TypeSpecifier<'src> {
+    pub base_type: BaseType,
+    pub use_try: bool,
+    pub conversion: Option<TypeConversion<'src>>,
+}
+
+#[derive(Debug)]
+pub enum TypeConversion<'src> {
+    Reference(Ident<'src>),
+    Subnode(Box<Node<'src>>),
 }
 
 #[derive(Debug)]
@@ -22,9 +39,6 @@ pub enum Property<'src> {
     Full {
         name: Ident<'src>,
         expression: Expression<'src>,
-    },
-    Empty {
-        name: Ident<'src>,
     },
     Anonymous {
         expression: Expression<'src>,
@@ -35,9 +49,15 @@ pub enum Property<'src> {
 pub enum Expression<'src> {
     Address { end: i128, start: i128 },
     Repeat(Repeat<'src>),
-    Reset(ResetValue),
+    Reset(Vec<i128>),
+    BaseType(BaseType),
     Allow,
     Number(i128),
+    DefaultNumber(i128),
+    CatchAllNumber(i128),
+    Access(Access),
+    ByteOrder(ByteOrder),
+    BitOrder(BitOrder),
     TypeReference(Ident<'src>),
     SubNode(Box<Node<'src>>),
 }
@@ -45,19 +65,13 @@ pub enum Expression<'src> {
 #[derive(Debug)]
 pub struct Repeat<'src> {
     pub source: RepeatSource<'src>,
-    pub stride: i32,
+    pub stride: i128,
 }
 
 #[derive(Debug)]
 pub enum RepeatSource<'src> {
-    Count(u16),
+    Count(i128),
     Enum(Ident<'src>),
-}
-
-#[derive(Debug)]
-pub enum ResetValue {
-    Integer(u128),
-    Array(Vec<u8>),
 }
 
 #[derive(Debug)]
@@ -74,19 +88,92 @@ where
     let node = recursive(|node| {
         let any_ident = select! {
             Token::Ident(val) = e => Ident { val, span: e.span() }
-        };
+        }
+        .labelled("'identifier'");
 
         let any_doc_comment = select! {
             Token::DocCommentLine(val) => val
         }
-        .labelled("doc comment");
+        .labelled("'doc comment'");
 
-        let expression = any()
-            .filter(|t| !matches!(t, Token::Ctrl(Control::Comma)))
-            .repeated();
-        let property = any_ident
+        let any_num = select! {
+            Token::Num(val) => val
+        }
+        .labelled("'number'");
+
+        let address = any_num
             .then_ignore(just(Token::Ctrl(Control::Colon)))
-            .then(expression);
+            .then(any_num)
+            .map(|(end, start)| Expression::Address { end, start })
+            .labelled("'address'");
+        let any_base_type = select! { Token::BaseType(bt) => bt }.labelled("'base type'");
+        let repeat_expression = just(Token::Ctrl(Control::AngleOpen))
+            .ignore_then(
+                any_num
+                    .map(RepeatSource::Count)
+                    .or(any_ident.map(RepeatSource::Enum))
+                    .then(just(Token::By).ignore_then(any_num).or_not()),
+            )
+            .then_ignore(just(Token::Ctrl(Control::AngleClose)))
+            .map(|(source, stride)| {
+                Expression::Repeat(Repeat {
+                    source,
+                    stride: stride.unwrap_or(1),
+                })
+            })
+            .labelled("'<repeat>'");
+        let reset_expression = just(Token::Ctrl(Control::BracketOpen))
+            .ignore_then(
+                any_num
+                    .separated_by(just(Token::Ctrl(Control::Comma)))
+                    .allow_trailing()
+                    .collect()
+                    .map(Expression::Reset)
+                    .then_ignore(just(Token::Ctrl(Control::BracketClose))),
+            )
+            .labelled("'[reset]'");
+
+        let expression = choice((
+            address,
+            any_base_type.map(Expression::BaseType),
+            any_num.map(Expression::Number),
+            just(Token::Default)
+                .ignore_then(any_num)
+                .map(Expression::DefaultNumber)
+                .labelled("'default number'"),
+            just(Token::CatchAll)
+                .ignore_then(any_num)
+                .map(Expression::CatchAllNumber)
+                .labelled("'catch-all number'"),
+            repeat_expression,
+            reset_expression,
+            just(Token::Allow).map(|_| Expression::Allow),
+            select! { Token::Access(val) => val }.map(Expression::Access),
+            select! { Token::ByteOrder(val) => val }.map(Expression::ByteOrder),
+            select! { Token::BitOrder(val) => val }.map(Expression::BitOrder),
+            any_ident.map(Expression::TypeReference),
+        ));
+        let property = any_ident
+            .then(just(Token::Ctrl(Control::Colon)).ignore_then(expression.clone()))
+            .map(|(name, expression)| Property::Full { name, expression })
+            .labelled("'property'");
+
+        let type_conversion = just(Token::As).ignore_then(just(Token::Try).or_not()).then(
+            any_ident.map(TypeConversion::Reference).or(node
+                .clone()
+                .map(|node| TypeConversion::Subnode(Box::new(node)))),
+        );
+        let type_specifier = just(Token::Ctrl(Control::Arrow))
+            .ignore_then(any_base_type)
+            .then(type_conversion.or_not())
+            .map(|(base_type, conversion)| TypeSpecifier {
+                base_type,
+                use_try: conversion
+                    .as_ref()
+                    .map(|(try_token, _)| try_token.is_some())
+                    .unwrap_or_default(),
+                conversion: conversion.map(|(_, conversion)| conversion),
+            });
 
         let node_body = just(Token::Ctrl(Control::CurlyOpen))
             .ignore_then(
@@ -100,24 +187,39 @@ where
                     .allow_trailing()
                     .collect::<Vec<_>>(),
             )
-            .then_ignore(just(Token::Ctrl(Control::CurlyClose)));
+            .then_ignore(just(Token::Ctrl(Control::CurlyClose)))
+            .labelled("'node body'");
 
         any_doc_comment
             .repeated()
             .collect()
             .then(any_ident.labelled("node-type"))
             .then(any_ident.labelled("node-name"))
-            .then(node_body)
-            .map(|(((doc_comments, r#type), name), body)| Node {
-                doc_comments,
-                r#type,
-                name,
-                properties: Vec::new(),
-                sub_nodes: Vec::new(),
-            })
+            .then(expression.repeated().collect::<Vec<_>>())
+            .then(type_specifier.or_not())
+            .then(node_body.or_not())
+            .map(
+                |(((((doc_comments, r#type), name), expressions), type_specifier), body)| {
+                    let (properties, sub_nodes) = body.unwrap_or_default();
+
+                    Node {
+                        doc_comments,
+                        r#type,
+                        name,
+                        type_specifier,
+                        properties: expressions
+                            .into_iter()
+                            .map(|expression| Property::Anonymous { expression })
+                            .chain(properties)
+                            .collect(),
+                        sub_nodes,
+                    }
+                },
+            )
     });
 
     node.separated_by(just(Token::Ctrl(Control::Comma)))
+        .allow_trailing()
         .collect()
 }
 
@@ -141,7 +243,7 @@ device Foo {
         repeat: <10 by 2>,
         repeat: <MyEnum by 2>, // Or repeat with enum
         reset: 0x1234,
-        reset: [0x12, 0x34], // Or reset with array
+        reset: [0x12, 0x34,], // Or reset with array
         address-overlap: allow,
         access: RW,
 
@@ -149,11 +251,11 @@ device Foo {
     },
 
     enum Purr -> u8 {
-        A,
-        B = 3:1,
-        C,
-        D = default 5,
-        r#BE = catch-all 6,
+        A: 0,
+        B: 3:1,
+        C: 4,
+        D: default 5,
+        r#BE: catch-all 6,
     },
 
     extern Rah -> u64,

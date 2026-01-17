@@ -1,3 +1,5 @@
+#![expect(clippy::from_str_radix_10, reason = "Other radixes are used")]
+
 use std::fmt::Display;
 
 use chumsky::{
@@ -72,7 +74,9 @@ pub fn lexer<'src>()
     let r#as = keyword("as").to(Token::As);
     let allow = keyword("allow").to(Token::Allow);
     let default = keyword("default").to(Token::Default);
-    let catch_all = keyword("catch-all").to(Token::CatchAll);
+    let catch_all = just("catch-all")
+        .to(Token::CatchAll)
+        .labelled("'catch-all'");
 
     let access = choice((
         keyword("RW").to(Token::Access(Access::RW)),
