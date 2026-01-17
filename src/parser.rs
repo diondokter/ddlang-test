@@ -1,5 +1,5 @@
 use crate::lexer::{Control, Token};
-use chumsky::{input::ValueInput, prelude::*, primitive::select};
+use chumsky::{input::ValueInput, prelude::*};
 
 pub type Span = SimpleSpan;
 pub type Spanned<T> = (T, Span);
@@ -10,11 +10,11 @@ pub struct Ast<'src> {
 
 #[derive(Debug)]
 pub struct Node<'src> {
-    doc_comments: Vec<&'src str>,
-    r#type: Ident<'src>,
-    name: Ident<'src>,
-    properties: Vec<Property<'src>>,
-    sub_nodes: Vec<Node<'src>>,
+    pub doc_comments: Vec<&'src str>,
+    pub r#type: Ident<'src>,
+    pub name: Ident<'src>,
+    pub properties: Vec<Property<'src>>,
+    pub sub_nodes: Vec<Node<'src>>,
 }
 
 #[derive(Debug)]
@@ -66,7 +66,7 @@ pub struct Ident<'src> {
     pub span: Span,
 }
 
-fn parser<'tokens, 'src: 'tokens, I>()
+pub fn parser<'tokens, 'src: 'tokens, I>()
 -> impl Parser<'tokens, I, Vec<Node<'src>>, extra::Err<Rich<'tokens, Token<'src>, Span>>> + Clone
 where
     I: ValueInput<'tokens, Token = Token<'src>, Span = Span>,

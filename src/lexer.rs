@@ -1,6 +1,9 @@
 use std::fmt::Display;
 
-use chumsky::{prelude::*, text::Char};
+use chumsky::{
+    prelude::*,
+    text::{Char, keyword},
+};
 
 use crate::{Access, BaseType, BitOrder, ByteOrder};
 
@@ -50,7 +53,7 @@ pub fn lexer<'src>()
         })
         .labelled("identifier");
 
-    let ctrl = one_of("[]{}<>,:=").map(|c| {
+    let ctrl = one_of("[]{}<>,:").map(|c| {
         Token::Ctrl(match c {
             '[' => Control::BracketOpen,
             ']' => Control::BracketClose,
@@ -60,40 +63,31 @@ pub fn lexer<'src>()
             '>' => Control::AngleClose,
             ',' => Control::Comma,
             ':' => Control::Colon,
-            '=' => Control::Equals,
             _ => unreachable!(),
         })
     });
     let arrow = just("->").to(Token::Ctrl(Control::Arrow)).labelled("->");
-    let r#try = just("try").to(Token::Try).labelled("try");
-    let by = just("by").to(Token::By).labelled("by");
-    let r#as = just("as").to(Token::As).labelled("as");
-    let allow = just("allow").to(Token::Allow).labelled("allow");
-    let default = just("default").to(Token::Default).labelled("default");
-    let catch_all = just("catch-all").to(Token::CatchAll).labelled("catch-all");
+    let r#try = keyword("try").to(Token::Try);
+    let by = keyword("by").to(Token::By);
+    let r#as = keyword("as").to(Token::As);
+    let allow = keyword("allow").to(Token::Allow);
+    let default = keyword("default").to(Token::Default);
+    let catch_all = keyword("catch-all").to(Token::CatchAll);
 
     let access = choice((
-        just("RW").to(Token::Access(Access::RW)).labelled("RW"),
-        just("RO").to(Token::Access(Access::RO)).labelled("RO"),
-        just("WO").to(Token::Access(Access::WO)).labelled("WO"),
+        keyword("RW").to(Token::Access(Access::RW)),
+        keyword("RO").to(Token::Access(Access::RO)),
+        keyword("WO").to(Token::Access(Access::WO)),
     ));
 
     let byte_order = choice((
-        just("BE")
-            .to(Token::ByteOrder(ByteOrder::BE))
-            .labelled("BE"),
-        just("LE")
-            .to(Token::ByteOrder(ByteOrder::LE))
-            .labelled("LE"),
+        keyword("BE").to(Token::ByteOrder(ByteOrder::BE)),
+        keyword("LE").to(Token::ByteOrder(ByteOrder::LE)),
     ));
 
     let bit_order = choice((
-        just("lsb0")
-            .to(Token::BitOrder(BitOrder::Lsb0))
-            .labelled("lsb0"),
-        just("msb0")
-            .to(Token::BitOrder(BitOrder::Msb0))
-            .labelled("msb0"),
+        keyword("lsb0").to(Token::BitOrder(BitOrder::Lsb0)),
+        keyword("msb0").to(Token::BitOrder(BitOrder::Msb0)),
     ));
 
     // TODO: Add underscore support in the middle of numbers
@@ -114,35 +108,17 @@ pub fn lexer<'src>()
         .boxed();
 
     let base_type = choice((
-        just("uint")
-            .to(Token::BaseType(BaseType::U8))
-            .labelled("uint"),
-        just("u8").to(Token::BaseType(BaseType::U8)).labelled("u8"),
-        just("u16")
-            .to(Token::BaseType(BaseType::U8))
-            .labelled("u16"),
-        just("u32")
-            .to(Token::BaseType(BaseType::U8))
-            .labelled("u32"),
-        just("u64")
-            .to(Token::BaseType(BaseType::U8))
-            .labelled("u64"),
-        just("int")
-            .to(Token::BaseType(BaseType::U8))
-            .labelled("int"),
-        just("i8").to(Token::BaseType(BaseType::U8)).labelled("i8"),
-        just("i16")
-            .to(Token::BaseType(BaseType::U8))
-            .labelled("i16"),
-        just("i32")
-            .to(Token::BaseType(BaseType::U8))
-            .labelled("i32"),
-        just("i64")
-            .to(Token::BaseType(BaseType::U8))
-            .labelled("i64"),
-        just("bool")
-            .to(Token::BaseType(BaseType::U8))
-            .labelled("bool"),
+        keyword("uint").to(Token::BaseType(BaseType::Uint)),
+        keyword("u8").to(Token::BaseType(BaseType::U8)),
+        keyword("u16").to(Token::BaseType(BaseType::U16)),
+        keyword("u32").to(Token::BaseType(BaseType::U32)),
+        keyword("u64").to(Token::BaseType(BaseType::U64)),
+        keyword("int").to(Token::BaseType(BaseType::Int)),
+        keyword("i8").to(Token::BaseType(BaseType::I8)),
+        keyword("i16").to(Token::BaseType(BaseType::I16)),
+        keyword("i32").to(Token::BaseType(BaseType::I32)),
+        keyword("i64").to(Token::BaseType(BaseType::I64)),
+        keyword("bool").to(Token::BaseType(BaseType::Bool)),
     ));
 
     let token = choice((
@@ -279,7 +255,6 @@ pub enum Control {
     AngleClose,
     Colon,
     Comma,
-    Equals,
     Arrow,
 }
 
@@ -294,7 +269,6 @@ impl Display for Control {
             Control::AngleClose => ">",
             Control::Colon => ":",
             Control::Comma => ",",
-            Control::Equals => "=",
             Control::Arrow => "->",
         };
 
@@ -333,10 +307,10 @@ device Foo {
 
     enum Purr -> u8 {
         A,
-        B = 3:1,
+        B: 3:1,
         C,
-        D = default 5,
-        r#BE = catch-all 6,
+        D: default 5,
+        r#BE: catch-all 6,
     },
 
     extern Rah -> u64,
