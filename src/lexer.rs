@@ -21,7 +21,7 @@ pub fn lexer<'src>()
                 .to_slice()
                 .map(Token::DocCommentLine),
         )
-        .labelled("///")
+        .labelled("'///'")
         .boxed();
 
     let ident_string = choice((
@@ -51,14 +51,14 @@ pub fn lexer<'src>()
             ident if ident.starts_with("r#") => Token::Ident(ident.strip_prefix("r#").unwrap()),
             ident => Token::Ident(ident),
         })
-        .labelled("identifier");
+        .labelled("'identifier'");
 
     let ctrl = one_of("[]{}<>,:").map(|c| {
         Token::Ctrl(match c {
-            '[' => Control::BracketOpen,
-            ']' => Control::BracketClose,
             '{' => Control::CurlyOpen,
             '}' => Control::CurlyClose,
+            '[' => Control::BracketOpen,
+            ']' => Control::BracketClose,
             '<' => Control::AngleOpen,
             '>' => Control::AngleClose,
             ',' => Control::Comma,
@@ -78,33 +78,42 @@ pub fn lexer<'src>()
         keyword("RW").to(Token::Access(Access::RW)),
         keyword("RO").to(Token::Access(Access::RO)),
         keyword("WO").to(Token::Access(Access::WO)),
-    ));
+    ))
+    .labelled("'access specifier'");
 
     let byte_order = choice((
         keyword("BE").to(Token::ByteOrder(ByteOrder::BE)),
         keyword("LE").to(Token::ByteOrder(ByteOrder::LE)),
-    ));
+    ))
+    .labelled("'byte order'");
 
     let bit_order = choice((
         keyword("lsb0").to(Token::BitOrder(BitOrder::Lsb0)),
         keyword("msb0").to(Token::BitOrder(BitOrder::Msb0)),
-    ));
+    ))
+    .labelled("'bit order'");
 
     // TODO: Add underscore support in the middle of numbers
     let positive_number = choice((
-        just("0x").ignore_then(text::int(16).map(|s: &str| i128::from_str_radix(s, 16).unwrap())),
-        just("0b").ignore_then(text::int(2).map(|s: &str| i128::from_str_radix(s, 2).unwrap())),
-        just("0o").ignore_then(text::int(8).map(|s: &str| i128::from_str_radix(s, 8).unwrap())),
-        text::int(10).map(|s: &str| i128::from_str_radix(s, 10).unwrap()),
+        just("0x").ignore_then(text::int(16).map(|s: &str| i128::from_str_radix(s, 16))),
+        just("0b").ignore_then(text::int(2).map(|s: &str| i128::from_str_radix(s, 2))),
+        just("0o").ignore_then(text::int(8).map(|s: &str| i128::from_str_radix(s, 8))),
+        text::int(10).map(|s: &str| i128::from_str_radix(s, 10)),
     ))
-    .labelled("number")
-    .boxed();
+    .validate(|val, extra, emitter| match val {
+        Err(e) => {
+            emitter.emit(Rich::custom(extra.span(), e));
+            i128::MAX
+        }
+        Ok(val) => val,
+    })
+    .labelled("'number'");
     let num = just('-')
         .to(-1i128)
         .or(empty().to(1))
         .then(positive_number)
         .map(|(pos, num)| Token::Num(pos * num))
-        .labelled("number")
+        .labelled("'number'")
         .boxed();
 
     let base_type = choice((
@@ -119,20 +128,21 @@ pub fn lexer<'src>()
         keyword("i32").to(Token::BaseType(BaseType::I32)),
         keyword("i64").to(Token::BaseType(BaseType::I64)),
         keyword("bool").to(Token::BaseType(BaseType::Bool)),
-    ));
+    ))
+    .labelled("'base type'");
 
     let token = choice((
         doc_comment,
-        ctrl,
-        arrow,
-        r#try,
-        r#as,
-        by,
         num,
         access,
         byte_order,
         bit_order,
         base_type,
+        ctrl,
+        arrow,
+        r#try,
+        r#as,
+        by,
         allow,
         default,
         catch_all,
@@ -143,7 +153,7 @@ pub fn lexer<'src>()
         .then_ignore(just("/").not())
         .ignore_then(any().and_is(text::newline().not()).repeated())
         .padded()
-        .labelled("//");
+        .labelled("'//'");
 
     token
         .clone()
@@ -310,7 +320,7 @@ device Foo {
         B: 3:1,
         C,
         D: default 5,
-        r#BE: catch-all 6,
+        r#BE: catch-all 01234567890123456789012345678901234567890123456789,
     },
 
     extern Rah -> u64,
