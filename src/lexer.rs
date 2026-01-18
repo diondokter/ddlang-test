@@ -1,6 +1,6 @@
 #![expect(clippy::from_str_radix_10, reason = "Other radixes are used")]
 
-use std::fmt::Display;
+use std::{borrow::Cow, fmt::Display};
 
 use chumsky::{
     prelude::*,
@@ -200,26 +200,46 @@ pub enum Token<'src> {
 impl<'src> Display for Token<'src> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Token::DocCommentLine(line) => write!(f, "/// {line}"),
-            Token::Ident(ident) => write!(f, "#{ident}"),
-            Token::Ctrl(val) => val.fmt(f),
-            Token::Try => write!(f, "try"),
+            Token::DocCommentLine(_) => write!(f, "doc comment"),
+            Token::Ident(_) => write!(f, "identifier"),
+            Token::Ctrl(ctrl) => write!(f, "{ctrl}"),
             Token::By => write!(f, "by"),
+            Token::Try => write!(f, "try"),
             Token::As => write!(f, "as"),
-            Token::Num(n) => write!(f, "{n}"),
-            Token::Error => write!(f, "ERROR"),
-            Token::Access(val) => val.fmt(f),
-            Token::ByteOrder(val) => val.fmt(f),
-            Token::BitOrder(val) => val.fmt(f),
-            Token::BaseType(val) => val.fmt(f),
             Token::Allow => write!(f, "allow"),
             Token::Default => write!(f, "default"),
             Token::CatchAll => write!(f, "catch-all"),
+            Token::Num(_) => write!(f, "number"),
+            Token::Access(_) => write!(f, "access-specifier"),
+            Token::ByteOrder(_) => write!(f, "byte-order"),
+            Token::BitOrder(_) => write!(f, "bit-order"),
+            Token::BaseType(_) => write!(f, "base type"),
+            Token::Error => write!(f, "ERROR"),
         }
     }
 }
 
 impl<'src> Token<'src> {
+    fn get_human_string(&self) -> Cow<'static, str> {
+        match self {
+            Token::DocCommentLine(line) => format!("/// {line}").into(),
+            Token::Ident(ident) => format!("#{ident}").into(),
+            Token::Ctrl(val) => val.to_string().into(),
+            Token::Try => "try".into(),
+            Token::By => "by".into(),
+            Token::As => "as".into(),
+            Token::Num(n) => n.to_string().into(),
+            Token::Error => "ERROR".into(),
+            Token::Access(val) => val.to_string().into(),
+            Token::ByteOrder(val) => val.to_string().into(),
+            Token::BitOrder(val) => val.to_string().into(),
+            Token::BaseType(val) => val.to_string().into(),
+            Token::Allow => "allow".into(),
+            Token::Default => "default".into(),
+            Token::CatchAll => "catch-all".into(),
+        }
+    }
+
     /// New line before, new line after, indent change
     fn get_print_format(&self) -> (bool, bool, i32) {
         match self {
@@ -248,7 +268,7 @@ impl<'src> Token<'src> {
                 write!(stream, "\n{:width$}", "", width = indent as usize * 4)?;
             }
 
-            write!(stream, "{token} ")?;
+            write!(stream, "{} ", token.get_human_string())?;
 
             if newline_after {
                 write!(stream, "\n{:width$}", "", width = indent as usize * 4)?;

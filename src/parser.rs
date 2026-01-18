@@ -13,12 +13,13 @@ pub struct Ast<'src> {
 
 #[derive(Debug)]
 pub struct Node<'src> {
-    pub doc_comments: Vec<&'src str>,
-    pub r#type: Ident<'src>,
+    pub doc_comments: Vec<Spanned<&'src str>>,
+    pub object_type: Ident<'src>,
     pub name: Ident<'src>,
     pub type_specifier: Option<TypeSpecifier<'src>>,
-    pub properties: Vec<Property<'src>>,
+    pub properties: Vec<Spanned<Property<'src>>>,
     pub sub_nodes: Vec<Node<'src>>,
+    pub span: Span,
 }
 
 #[derive(Debug)]
@@ -38,10 +39,10 @@ pub enum TypeConversion<'src> {
 pub enum Property<'src> {
     Full {
         name: Ident<'src>,
-        expression: Expression<'src>,
+        expression: Spanned<Expression<'src>>,
     },
     Anonymous {
-        expression: Expression<'src>,
+        expression: Spanned<Expression<'src>>,
     },
 }
 
@@ -49,7 +50,8 @@ pub enum Property<'src> {
 pub enum Expression<'src> {
     Address { end: i128, start: i128 },
     Repeat(Repeat<'src>),
-    Reset(Vec<i128>),
+    ResetNumber(i128),
+    ResetArray(Vec<u8>),
     BaseType(BaseType),
     Allow,
     Number(i128),
@@ -94,6 +96,7 @@ where
         let any_doc_comment = select! {
             Token::DocCommentLine(val) => val
         }
+        .map_with(|line, extra| (line, extra.span()))
         .labelled("'doc comment'");
 
         let any_num = select! {
@@ -125,10 +128,24 @@ where
         let reset_expression = just(Token::Ctrl(Control::BracketOpen))
             .ignore_then(
                 any_num
+                    .map_with(|num, extra| (num, extra.span()))
                     .separated_by(just(Token::Ctrl(Control::Comma)))
                     .allow_trailing()
-                    .collect()
-                    .map(Expression::Reset)
+                    .collect::<Vec<_>>()
+                    .try_map(|numbers, _| {
+                        if numbers.len() == 1 {
+                            Ok(Expression::ResetNumber(numbers[0].0))
+                        } else {
+                            numbers
+                                .into_iter()
+                                .map(|(num, num_span)| {
+                                    u8::try_from(num)
+                                        .map_err(|_| Rich::custom(num_span, "Value must be a byte"))
+                                })
+                                .collect::<Result<Vec<u8>, _>>()
+                                .map(Expression::ResetArray)
+                        }
+                    })
                     .then_ignore(just(Token::Ctrl(Control::BracketClose))),
             )
             .labelled("'[reset]'");
@@ -152,16 +169,19 @@ where
             select! { Token::ByteOrder(val) => val }.map(Expression::ByteOrder),
             select! { Token::BitOrder(val) => val }.map(Expression::BitOrder),
             any_ident.map(Expression::TypeReference),
-        ));
+        ))
+        .map_with(|expression, extra| (expression, extra.span()));
         let property = any_ident
             .then(just(Token::Ctrl(Control::Colon)).ignore_then(expression.clone()))
-            .map(|(name, expression)| Property::Full { name, expression })
+            .map_with(|(name, expression), extra| {
+                (Property::Full { name, expression }, extra.span())
+            })
             .labelled("'property'");
 
         let type_conversion = just(Token::As).ignore_then(just(Token::Try).or_not()).then(
-            any_ident.map(TypeConversion::Reference).or(node
-                .clone()
-                .map(|node| TypeConversion::Subnode(Box::new(node)))),
+            node.clone()
+                .map(|node| TypeConversion::Subnode(Box::new(node)))
+                .or(any_ident.map(TypeConversion::Reference)),
         );
         let type_specifier = just(Token::Ctrl(Control::Arrow))
             .ignore_then(any_base_type)
@@ -193,26 +213,31 @@ where
         any_doc_comment
             .repeated()
             .collect()
-            .then(any_ident.labelled("node-type"))
-            .then(any_ident.labelled("node-name"))
+            .then(any_ident.labelled("'object-type'"))
+            .then(any_ident.labelled("'object-name'"))
             .then(expression.repeated().collect::<Vec<_>>())
             .then(type_specifier.or_not())
             .then(node_body.or_not())
-            .map(
-                |(((((doc_comments, r#type), name), expressions), type_specifier), body)| {
+            .map_with(
+                |(((((doc_comments, object_type), name), expressions), type_specifier), body),
+                 extra| {
                     let (properties, sub_nodes) = body.unwrap_or_default();
 
                     Node {
                         doc_comments,
-                        r#type,
+                        object_type,
                         name,
                         type_specifier,
                         properties: expressions
                             .into_iter()
-                            .map(|expression| Property::Anonymous { expression })
+                            .map(|expression| {
+                                let span = expression.1;
+                                (Property::Anonymous { expression }, span)
+                            })
                             .chain(properties)
                             .collect(),
                         sub_nodes,
+                        span: extra.span(),
                     }
                 },
             )
@@ -242,8 +267,8 @@ device Foo {
         address: 0,
         repeat: <10 by 2>,
         repeat: <MyEnum by 2>, // Or repeat with enum
-        reset: 0x1234,
-        reset: [0x12, 0x34,], // Or reset with array
+        reset: [0x1234],
+        reset: [0x12, 0x134], // Or reset with array
         address-overlap: allow,
         access: RW,
 
@@ -321,7 +346,7 @@ device Foo {
                 eprintln!("{}", std::str::from_utf8(&error_string).unwrap())
             }
 
-            println!("{:?}", ast);
+            println!("{:#?}", ast);
         }
     }
 }
