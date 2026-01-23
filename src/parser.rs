@@ -1,7 +1,6 @@
-use crate::{
-    Access, BaseType, BitOrder, ByteOrder,
-    lexer::{Control, Token},
-};
+use std::fmt::Display;
+
+use crate::{Access, BaseType, BitOrder, ByteOrder, lexer::Token};
 use chumsky::{input::ValueInput, prelude::*};
 
 pub type Span = SimpleSpan;
@@ -20,6 +19,62 @@ pub struct Node<'src> {
     pub properties: Vec<Spanned<Property<'src>>>,
     pub sub_nodes: Vec<Node<'src>>,
     pub span: Span,
+}
+
+impl<'src> Display for Node<'src> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let indentation_level = f.width().unwrap_or_default();
+        let indentation = format!("{:width$}", "", width = indentation_level * 4);
+
+        for (doc_comment, _) in &self.doc_comments {
+            writeln!(f, "{indentation}///{doc_comment}")?;
+        }
+        write!(f, "{indentation}{} {}", self.object_type.val, self.name.val)?;
+
+        for expression in self.properties.iter().filter_map(|(p, _)| match p {
+            Property::Full { .. } => None,
+            Property::Anonymous { expression } => Some(&expression.0),
+        }) {
+            write!(f, " {expression}")?;
+        }
+
+        if let Some(type_specifier) = self.type_specifier.as_ref() {
+            write!(f, " -> {}", type_specifier.base_type)?;
+
+            if let Some(conversion) = type_specifier.conversion.as_ref() {
+                write!(f, " as")?;
+                if type_specifier.use_try {
+                    write!(f, " try")?;
+                }
+
+                match conversion {
+                    TypeConversion::Reference(ident) => write!(f, " {}", ident.val)?,
+                    TypeConversion::Subnode(node) => {
+                        write!(f, "\n{node:width$}", width = indentation_level + 1)?
+                    }
+                }
+            }
+        }
+
+        if !self.sub_nodes.is_empty() || self.properties.iter().any(|(p, _)| !p.is_anonymous()) {
+            writeln!(f, " {{")?;
+
+            for (ident, expression) in self.properties.iter().filter_map(|(p, _)| match p {
+                Property::Full { name, expression } => Some((name, &expression.0)),
+                Property::Anonymous { .. } => None,
+            }) {
+                writeln!(f, "{indentation}    {}: {},", ident.val, expression)?;
+            }
+
+            for node in self.sub_nodes.iter() {
+                writeln!(f, "{node:width$},", width = indentation_level + 1)?;
+            }
+
+            write!(f, "{indentation}}}")?;
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -46,9 +101,19 @@ pub enum Property<'src> {
     },
 }
 
+impl<'src> Property<'src> {
+    /// Returns `true` if the property is [`Anonymous`].
+    ///
+    /// [`Anonymous`]: Property::Anonymous
+    #[must_use]
+    pub fn is_anonymous(&self) -> bool {
+        matches!(self, Self::Anonymous { .. })
+    }
+}
+
 #[derive(Debug)]
 pub enum Expression<'src> {
-    Address { end: i128, start: i128 },
+    Range { end: i128, start: i128 },
     Repeat(Repeat<'src>),
     ResetNumber(i128),
     ResetArray(Vec<u8>),
@@ -62,6 +127,36 @@ pub enum Expression<'src> {
     BitOrder(BitOrder),
     TypeReference(Ident<'src>),
     SubNode(Box<Node<'src>>),
+    Error,
+}
+
+impl<'src> Display for Expression<'src> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Expression::Range { end, start } => write!(f, "{end}:{start}"),
+            Expression::Repeat(Repeat {
+                source: RepeatSource::Count(count),
+                stride,
+            }) => write!(f, "<{count} by {stride}>"),
+            Expression::Repeat(Repeat {
+                source: RepeatSource::Enum(ident),
+                stride,
+            }) => write!(f, "<{} by {stride}>", ident.val),
+            Expression::ResetNumber(num) => write!(f, "[{num}]"),
+            Expression::ResetArray(items) => write!(f, "{items:?}"),
+            Expression::BaseType(base_type) => base_type.fmt(f),
+            Expression::Allow => write!(f, "allow"),
+            Expression::Number(num) => num.fmt(f),
+            Expression::DefaultNumber(num) => write!(f, "default {num}"),
+            Expression::CatchAllNumber(num) => write!(f, "catch-all {num}"),
+            Expression::Access(val) => val.fmt(f),
+            Expression::ByteOrder(val) => val.fmt(f),
+            Expression::BitOrder(val) => val.fmt(f),
+            Expression::TypeReference(ident) => ident.val.fmt(f),
+            Expression::SubNode(val) => val.fmt(f),
+            Expression::Error => write!(f, "ERROR"),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -104,54 +199,56 @@ where
         }
         .labelled("'number'");
 
-        let address = any_num
-            .then_ignore(just(Token::Ctrl(Control::Colon)))
+        let range = any_num
+            .then_ignore(just(Token::Colon))
             .then(any_num)
-            .map(|(end, start)| Expression::Address { end, start })
-            .labelled("'address'");
+            .map(|(end, start)| Expression::Range { end, start })
+            .labelled("'range'");
         let any_base_type = select! { Token::BaseType(bt) => bt }.labelled("'base type'");
-        let repeat_expression = just(Token::Ctrl(Control::AngleOpen))
-            .ignore_then(
-                any_num
-                    .map(RepeatSource::Count)
-                    .or(any_ident.map(RepeatSource::Enum))
-                    .then(just(Token::By).ignore_then(any_num).or_not()),
-            )
-            .then_ignore(just(Token::Ctrl(Control::AngleClose)))
+        let repeat_expression = any_num
+            .map(RepeatSource::Count)
+            .or(any_ident.map(RepeatSource::Enum))
+            .then(just(Token::By).ignore_then(any_num).or_not())
             .map(|(source, stride)| {
                 Expression::Repeat(Repeat {
                     source,
                     stride: stride.unwrap_or(1),
                 })
             })
-            .labelled("'<repeat>'");
-        let reset_expression = just(Token::Ctrl(Control::BracketOpen))
-            .ignore_then(
-                any_num
-                    .map_with(|num, extra| (num, extra.span()))
-                    .separated_by(just(Token::Ctrl(Control::Comma)))
-                    .allow_trailing()
-                    .collect::<Vec<_>>()
-                    .try_map(|numbers, _| {
-                        if numbers.len() == 1 {
-                            Ok(Expression::ResetNumber(numbers[0].0))
-                        } else {
-                            numbers
-                                .into_iter()
-                                .map(|(num, num_span)| {
-                                    u8::try_from(num)
-                                        .map_err(|_| Rich::custom(num_span, "Value must be a byte"))
-                                })
-                                .collect::<Result<Vec<u8>, _>>()
-                                .map(Expression::ResetArray)
+            .delimited_by(just(Token::AngleOpen), just(Token::AngleClose))
+            .labelled("'<repeat>'")
+            .boxed();
+        let reset_expression = any_num
+            .map_with(|num, extra| (num, extra.span()))
+            .separated_by(just(Token::Comma))
+            .allow_trailing()
+            .collect::<Vec<_>>()
+            .validate(|numbers, _, emitter| {
+                if numbers.len() == 1 {
+                    Expression::ResetNumber(numbers[0].0)
+                } else {
+                    match numbers
+                        .into_iter()
+                        .map(|(num, num_span)| {
+                            u8::try_from(num)
+                                .map_err(|_| Rich::custom(num_span, "Value must be a byte"))
+                        })
+                        .collect::<Result<Vec<u8>, _>>()
+                    {
+                        Ok(array) => Expression::ResetArray(array),
+                        Err(e) => {
+                            emitter.emit(e);
+                            Expression::Error
                         }
-                    })
-                    .then_ignore(just(Token::Ctrl(Control::BracketClose))),
-            )
-            .labelled("'[reset]'");
+                    }
+                }
+            })
+            .delimited_by(just(Token::BracketOpen), just(Token::BracketClose))
+            .labelled("'[reset]'")
+            .boxed();
 
         let expression = choice((
-            address,
+            range,
             any_base_type.map(Expression::BaseType),
             any_num.map(Expression::Number),
             just(Token::Default)
@@ -170,20 +267,23 @@ where
             select! { Token::BitOrder(val) => val }.map(Expression::BitOrder),
             any_ident.map(Expression::TypeReference),
         ))
-        .map_with(|expression, extra| (expression, extra.span()));
+        .map_with(|expression, extra| (expression, extra.span()))
+        .boxed();
+
         let property = any_ident
-            .then(just(Token::Ctrl(Control::Colon)).ignore_then(expression.clone()))
+            .then(just(Token::Colon).ignore_then(expression.clone()))
             .map_with(|(name, expression), extra| {
                 (Property::Full { name, expression }, extra.span())
             })
-            .labelled("'property'");
+            .labelled("'property'")
+            .boxed();
 
         let type_conversion = just(Token::As).ignore_then(just(Token::Try).or_not()).then(
             node.clone()
                 .map(|node| TypeConversion::Subnode(Box::new(node)))
                 .or(any_ident.map(TypeConversion::Reference)),
         );
-        let type_specifier = just(Token::Ctrl(Control::Arrow))
+        let type_specifier = just(Token::Arrow)
             .ignore_then(any_base_type)
             .then(type_conversion.or_not())
             .map(|(base_type, conversion)| TypeSpecifier {
@@ -193,21 +293,22 @@ where
                     .map(|(try_token, _)| try_token.is_some())
                     .unwrap_or_default(),
                 conversion: conversion.map(|(_, conversion)| conversion),
-            });
+            })
+            .boxed();
 
-        let node_body = just(Token::Ctrl(Control::CurlyOpen))
+        let node_body = just(Token::CurlyOpen)
             .ignore_then(
                 property
-                    .separated_by(just(Token::Ctrl(Control::Comma)))
+                    .separated_by(just(Token::Comma))
                     .allow_trailing()
                     .collect::<Vec<_>>(),
             )
             .then(
-                node.separated_by(just(Token::Ctrl(Control::Comma)))
+                node.separated_by(just(Token::Comma))
                     .allow_trailing()
                     .collect::<Vec<_>>(),
             )
-            .then_ignore(just(Token::Ctrl(Control::CurlyClose)))
+            .then_ignore(just(Token::CurlyClose))
             .labelled("'node body'");
 
         any_doc_comment
@@ -243,7 +344,7 @@ where
             )
     });
 
-    node.separated_by(just(Token::Ctrl(Control::Comma)))
+    node.separated_by(just(Token::Comma))
         .allow_trailing()
         .collect()
 }
@@ -298,7 +399,10 @@ device Foo {
     fn test_parser() {
         println!("Node size: {}", std::mem::size_of::<Spanned<Node>>());
 
+        let start = std::time::Instant::now();
         let (tokens, errors) = crate::lexer::lexer().parse(CODE).into_output_errors();
+        let elapsed = start.elapsed();
+        println!("Lexing: {elapsed:?}");
 
         for error in errors {
             let mut error_string = Vec::new();
@@ -328,7 +432,7 @@ device Foo {
                 )
                 .into_output_errors();
             let elapsed = start.elapsed();
-            println!("{elapsed:?}");
+            println!("Parsing: {elapsed:?}");
 
             for error in parse_errs {
                 let mut error_string = Vec::new();
@@ -346,7 +450,11 @@ device Foo {
                 eprintln!("{}", std::str::from_utf8(&error_string).unwrap())
             }
 
-            println!("{:#?}", ast);
+            if let Some((nodes, _)) = ast {
+                for node in nodes {
+                    println!("{node}");
+                }
+            }
         }
     }
 }

@@ -2,10 +2,7 @@
 
 use std::{borrow::Cow, fmt::Display};
 
-use chumsky::{
-    prelude::*,
-    text::{Char, keyword},
-};
+use chumsky::{prelude::*, text::Char};
 
 use crate::{Access, BaseType, BitOrder, ByteOrder};
 
@@ -23,11 +20,11 @@ pub fn lexer<'src>()
                 .to_slice()
                 .map(Token::DocCommentLine),
         )
-        .labelled("'///'")
-        .boxed();
+        .labelled("'///'");
 
-    let ident_string = choice((
-        just("r#").ignore_then(
+    let ident_string = just("r#")
+        .or_not()
+        .ignore_then(
             any()
                 .filter(|c: &char| c.is_ident_start() || *c == '_')
                 .then(
@@ -35,17 +32,8 @@ pub fn lexer<'src>()
                         .filter(|c: &char| c.is_ident_continue() || *c == '_' || *c == '-')
                         .repeated(),
                 ),
-        ),
-        any()
-            .filter(|c: &char| c.is_ident_start() || *c == '_')
-            .then(
-                any()
-                    .filter(|c: &char| c.is_ident_continue() || *c == '_' || *c == '-')
-                    .repeated(),
-            ),
-    ))
-    .to_slice()
-    .boxed();
+        )
+        .to_slice();
 
     // A parser for identifiers and keywords
     let ident = ident_string
@@ -55,45 +43,43 @@ pub fn lexer<'src>()
         })
         .labelled("'identifier'");
 
-    let ctrl = one_of("[]{}<>,:").map(|c| {
-        Token::Ctrl(match c {
-            '{' => Control::CurlyOpen,
-            '}' => Control::CurlyClose,
-            '[' => Control::BracketOpen,
-            ']' => Control::BracketClose,
-            '<' => Control::AngleOpen,
-            '>' => Control::AngleClose,
-            ',' => Control::Comma,
-            ':' => Control::Colon,
-            _ => unreachable!(),
-        })
+    let ctrl = one_of("[]{}<>,:").map(|c| match c {
+        '{' => Token::CurlyOpen,
+        '}' => Token::CurlyClose,
+        '[' => Token::BracketOpen,
+        ']' => Token::BracketClose,
+        '<' => Token::AngleOpen,
+        '>' => Token::AngleClose,
+        ',' => Token::Comma,
+        ':' => Token::Colon,
+        _ => unreachable!(),
     });
-    let arrow = just("->").to(Token::Ctrl(Control::Arrow)).labelled("->");
-    let r#try = keyword("try").to(Token::Try);
-    let by = keyword("by").to(Token::By);
-    let r#as = keyword("as").to(Token::As);
-    let allow = keyword("allow").to(Token::Allow);
-    let default = keyword("default").to(Token::Default);
+    let arrow = just("->").to(Token::Arrow).labelled("->");
+    let r#try = just("try").to(Token::Try);
+    let by = just("by").to(Token::By);
+    let r#as = just("as").to(Token::As);
+    let allow = just("allow").to(Token::Allow);
+    let default = just("default").to(Token::Default);
     let catch_all = just("catch-all")
         .to(Token::CatchAll)
         .labelled("'catch-all'");
 
     let access = choice((
-        keyword("RW").to(Token::Access(Access::RW)),
-        keyword("RO").to(Token::Access(Access::RO)),
-        keyword("WO").to(Token::Access(Access::WO)),
+        just("RW").to(Token::Access(Access::RW)),
+        just("RO").to(Token::Access(Access::RO)),
+        just("WO").to(Token::Access(Access::WO)),
     ))
     .labelled("'access specifier'");
 
     let byte_order = choice((
-        keyword("BE").to(Token::ByteOrder(ByteOrder::BE)),
-        keyword("LE").to(Token::ByteOrder(ByteOrder::LE)),
+        just("BE").to(Token::ByteOrder(ByteOrder::BE)),
+        just("LE").to(Token::ByteOrder(ByteOrder::LE)),
     ))
     .labelled("'byte order'");
 
     let bit_order = choice((
-        keyword("lsb0").to(Token::BitOrder(BitOrder::Lsb0)),
-        keyword("msb0").to(Token::BitOrder(BitOrder::Msb0)),
+        just("lsb0").to(Token::BitOrder(BitOrder::Lsb0)),
+        just("msb0").to(Token::BitOrder(BitOrder::Msb0)),
     ))
     .labelled("'bit order'");
 
@@ -121,17 +107,17 @@ pub fn lexer<'src>()
         .boxed();
 
     let base_type = choice((
-        keyword("uint").to(Token::BaseType(BaseType::Uint)),
-        keyword("u8").to(Token::BaseType(BaseType::U8)),
-        keyword("u16").to(Token::BaseType(BaseType::U16)),
-        keyword("u32").to(Token::BaseType(BaseType::U32)),
-        keyword("u64").to(Token::BaseType(BaseType::U64)),
-        keyword("int").to(Token::BaseType(BaseType::Int)),
-        keyword("i8").to(Token::BaseType(BaseType::I8)),
-        keyword("i16").to(Token::BaseType(BaseType::I16)),
-        keyword("i32").to(Token::BaseType(BaseType::I32)),
-        keyword("i64").to(Token::BaseType(BaseType::I64)),
-        keyword("bool").to(Token::BaseType(BaseType::Bool)),
+        just("uint").to(Token::BaseType(BaseType::Uint)),
+        just("u8").to(Token::BaseType(BaseType::U8)),
+        just("u16").to(Token::BaseType(BaseType::U16)),
+        just("u32").to(Token::BaseType(BaseType::U32)),
+        just("u64").to(Token::BaseType(BaseType::U64)),
+        just("int").to(Token::BaseType(BaseType::Int)),
+        just("i8").to(Token::BaseType(BaseType::I8)),
+        just("i16").to(Token::BaseType(BaseType::I16)),
+        just("i32").to(Token::BaseType(BaseType::I32)),
+        just("i64").to(Token::BaseType(BaseType::I64)),
+        just("bool").to(Token::BaseType(BaseType::Bool)),
     ))
     .labelled("'base type'");
 
@@ -162,7 +148,7 @@ pub fn lexer<'src>()
     token
         .clone()
         .map_with(|tok, e| (tok, e.span()))
-        .padded_by(comment.repeated())
+        .padded_by(comment.clone().repeated())
         .padded()
         .recover_with(via_parser(
             any()
@@ -182,7 +168,15 @@ pub fn lexer<'src>()
 pub enum Token<'src> {
     DocCommentLine(&'src str),
     Ident(&'src str),
-    Ctrl(Control),
+    CurlyOpen,
+    CurlyClose,
+    BracketOpen,
+    BracketClose,
+    AngleOpen,
+    AngleClose,
+    Comma,
+    Colon,
+    Arrow,
     By,
     Try,
     As,
@@ -202,7 +196,15 @@ impl<'src> Display for Token<'src> {
         match self {
             Token::DocCommentLine(_) => write!(f, "doc comment"),
             Token::Ident(_) => write!(f, "identifier"),
-            Token::Ctrl(ctrl) => write!(f, "{ctrl}"),
+            Token::CurlyOpen => write!(f, "{{"),
+            Token::CurlyClose => write!(f, "}}"),
+            Token::BracketOpen => write!(f, "["),
+            Token::BracketClose => write!(f, "]"),
+            Token::AngleOpen => write!(f, "<"),
+            Token::AngleClose => write!(f, ">"),
+            Token::Colon => write!(f, ":"),
+            Token::Comma => write!(f, ","),
+            Token::Arrow => write!(f, "->"),
             Token::By => write!(f, "by"),
             Token::Try => write!(f, "try"),
             Token::As => write!(f, "as"),
@@ -224,7 +226,15 @@ impl<'src> Token<'src> {
         match self {
             Token::DocCommentLine(line) => format!("/// {line}").into(),
             Token::Ident(ident) => format!("#{ident}").into(),
-            Token::Ctrl(val) => val.to_string().into(),
+            Token::CurlyOpen => "{".into(),
+            Token::CurlyClose => "}".into(),
+            Token::BracketOpen => "[".into(),
+            Token::BracketClose => "]".into(),
+            Token::AngleOpen => "<".into(),
+            Token::AngleClose => ">".into(),
+            Token::Colon => ":".into(),
+            Token::Comma => ",".into(),
+            Token::Arrow => "->".into(),
             Token::Try => "try".into(),
             Token::By => "by".into(),
             Token::As => "as".into(),
@@ -243,11 +253,9 @@ impl<'src> Token<'src> {
     /// New line before, new line after, indent change
     fn get_print_format(&self) -> (bool, bool, i32) {
         match self {
-            Token::DocCommentLine(_) | Token::Ctrl(Control::Comma) => (false, true, 0),
-            Token::Ctrl(Control::CurlyOpen) | Token::Ctrl(Control::BracketOpen) => (false, true, 1),
-            Token::Ctrl(Control::CurlyClose) | Token::Ctrl(Control::BracketClose) => {
-                (true, false, -1)
-            }
+            Token::DocCommentLine(_) | Token::Comma => (false, true, 0),
+            Token::CurlyOpen | Token::BracketOpen => (false, true, 1),
+            Token::CurlyClose | Token::BracketClose => (true, false, -1),
             _ => (false, false, 0),
         }
     }
@@ -279,37 +287,6 @@ impl<'src> Token<'src> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Control {
-    CurlyOpen,
-    CurlyClose,
-    BracketOpen,
-    BracketClose,
-    AngleOpen,
-    AngleClose,
-    Colon,
-    Comma,
-    Arrow,
-}
-
-impl Display for Control {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
-            Control::CurlyOpen => "{",
-            Control::CurlyClose => "}",
-            Control::BracketOpen => "[",
-            Control::BracketClose => "]",
-            Control::AngleOpen => "<",
-            Control::AngleClose => ">",
-            Control::Colon => ":",
-            Control::Comma => ",",
-            Control::Arrow => "->",
-        };
-
-        write!(f, "{s}")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::io::stdout;
@@ -337,14 +314,14 @@ device Foo {
         access: RW,
 
         fields: MyFs
-    }(),
+    },
 
     enum Purr -> u8 {
         A,
         B: 3:1,
         C,
         D: default 5,
-        r#BE: catch-all 01234567890123456789012345678901234567890123456789,
+        r#BE: catch-all 012345678,
     },
 
     extern Rah -> u64,
@@ -362,10 +339,16 @@ device Foo {
     fn test_lexer() {
         println!("Token size: {}", std::mem::size_of::<Spanned<Token>>());
 
+        let code = CODE;
+
         let start = std::time::Instant::now();
-        let output = super::lexer().parse(CODE);
+        let output = super::lexer().parse(&code);
         let elapsed = start.elapsed();
-        println!("{elapsed:?}");
+        println!("{elapsed:?} for {} bytes", code.len());
+        println!(
+            "{} MB/s",
+            code.len() as f64 / elapsed.as_secs_f64() / 1024.0 / 1024.0
+        );
 
         for error in output.errors() {
             let mut error_string = Vec::new();
