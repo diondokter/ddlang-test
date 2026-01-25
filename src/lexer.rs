@@ -2,191 +2,96 @@
 
 use std::{borrow::Cow, fmt::Display};
 
-use chumsky::{prelude::*, text::Char};
+use logos::Logos;
 
 use crate::{Access, BaseType, BitOrder, ByteOrder};
 
-// A few type definitions to be used by our parsers below
-pub type Span = SimpleSpan;
-pub type Spanned<T> = (T, Span);
+// fn parse_num(slice: &str) -> Result<i128, Error> {
+//     let (multiplier, positive) = slice
+//         .strip_prefix('-')
+//         .map(|rest| (-1, rest))
+//         .unwrap_or((1, slice));
 
-pub fn lexer<'src>()
--> impl Parser<'src, &'src str, Vec<Spanned<Token<'src>>>, extra::Err<Rich<'src, char>>> {
-    let doc_comment = just("///")
-        .ignore_then(
-            any()
-                .and_is(text::newline().or(end()).not())
-                .repeated()
-                .to_slice()
-                .map(Token::DocCommentLine),
-        )
-        .labelled("'///'");
+//     let pos_num = if let Some(num_slice) = positive.strip_prefix("0b") {
+//         i128::from_str_radix(&num_slice.replace('_', ""), 2)
+//     } else if let Some(num_slice) = positive.strip_prefix("0o") {
+//         i128::from_str_radix(&num_slice.replace('_', ""), 8)
+//     } else if let Some(num_slice) = positive.strip_prefix("0x") {
+//         i128::from_str_radix(&num_slice.replace('_', ""), 16)
+//     } else {
+//         i128::from_str_radix(&positive.replace('_', ""), 10)
+//     };
 
-    let ident_string = just("r#")
-        .or_not()
-        .ignore_then(
-            any()
-                .filter(|c: &char| c.is_ident_start() || *c == '_')
-                .then(
-                    any()
-                        .filter(|c: &char| c.is_ident_continue() || *c == '_' || *c == '-')
-                        .repeated(),
-                ),
-        )
-        .to_slice();
+//     pos_num
+//         .map(|n| n * multiplier)
+//         .map_err(Error::ParseIntError)
+// }
 
-    // A parser for identifiers and keywords
-    let ident = ident_string
-        .map(|ident: &str| match ident {
-            ident if ident.starts_with("r#") => Token::Ident(ident.strip_prefix("r#").unwrap()),
-            ident => Token::Ident(ident),
-        })
-        .labelled("'identifier'");
-
-    let ctrl = one_of("[]{}<>,:").map(|c| match c {
-        '{' => Token::CurlyOpen,
-        '}' => Token::CurlyClose,
-        '[' => Token::BracketOpen,
-        ']' => Token::BracketClose,
-        '<' => Token::AngleOpen,
-        '>' => Token::AngleClose,
-        ',' => Token::Comma,
-        ':' => Token::Colon,
-        _ => unreachable!(),
-    });
-    let arrow = just("->").to(Token::Arrow).labelled("->");
-    let r#try = just("try").to(Token::Try);
-    let by = just("by").to(Token::By);
-    let r#as = just("as").to(Token::As);
-    let allow = just("allow").to(Token::Allow);
-    let default = just("default").to(Token::Default);
-    let catch_all = just("catch-all")
-        .to(Token::CatchAll)
-        .labelled("'catch-all'");
-
-    let access = choice((
-        just("RW").to(Token::Access(Access::RW)),
-        just("RO").to(Token::Access(Access::RO)),
-        just("WO").to(Token::Access(Access::WO)),
-    ))
-    .labelled("'access specifier'");
-
-    let byte_order = choice((
-        just("BE").to(Token::ByteOrder(ByteOrder::BE)),
-        just("LE").to(Token::ByteOrder(ByteOrder::LE)),
-    ))
-    .labelled("'byte order'");
-
-    let bit_order = choice((
-        just("lsb0").to(Token::BitOrder(BitOrder::Lsb0)),
-        just("msb0").to(Token::BitOrder(BitOrder::Msb0)),
-    ))
-    .labelled("'bit order'");
-
-    // TODO: Add underscore support in the middle of numbers
-    let positive_number = choice((
-        just("0x").ignore_then(text::int(16).map(|s: &str| i128::from_str_radix(s, 16))),
-        just("0b").ignore_then(text::int(2).map(|s: &str| i128::from_str_radix(s, 2))),
-        just("0o").ignore_then(text::int(8).map(|s: &str| i128::from_str_radix(s, 8))),
-        text::int(10).map(|s: &str| i128::from_str_radix(s, 10)),
-    ))
-    .validate(|val, extra, emitter| match val {
-        Err(e) => {
-            emitter.emit(Rich::custom(extra.span(), e));
-            i128::MAX
-        }
-        Ok(val) => val,
-    })
-    .labelled("'number'");
-    let num = just('-')
-        .to(-1i128)
-        .or(empty().to(1))
-        .then(positive_number)
-        .map(|(pos, num)| Token::Num(pos * num))
-        .labelled("'number'")
-        .boxed();
-
-    let base_type = choice((
-        just("uint").to(Token::BaseType(BaseType::Uint)),
-        just("u8").to(Token::BaseType(BaseType::U8)),
-        just("u16").to(Token::BaseType(BaseType::U16)),
-        just("u32").to(Token::BaseType(BaseType::U32)),
-        just("u64").to(Token::BaseType(BaseType::U64)),
-        just("int").to(Token::BaseType(BaseType::Int)),
-        just("i8").to(Token::BaseType(BaseType::I8)),
-        just("i16").to(Token::BaseType(BaseType::I16)),
-        just("i32").to(Token::BaseType(BaseType::I32)),
-        just("i64").to(Token::BaseType(BaseType::I64)),
-        just("bool").to(Token::BaseType(BaseType::Bool)),
-    ))
-    .labelled("'base type'");
-
-    let token = choice((
-        doc_comment,
-        num,
-        access,
-        byte_order,
-        bit_order,
-        base_type,
-        ctrl,
-        arrow,
-        r#try,
-        r#as,
-        by,
-        allow,
-        default,
-        catch_all,
-        ident,
-    ));
-
-    let comment = just("//")
-        .then_ignore(just("/").not())
-        .ignore_then(any().and_is(text::newline().not()).repeated())
-        .padded()
-        .labelled("'//'");
-
-    token
-        .clone()
-        .map_with(|tok, e| (tok, e.span()))
-        .padded_by(comment.clone().repeated())
-        .padded()
-        .recover_with(via_parser(
-            any()
-                .filter(|c: &char| !c.is_whitespace())
-                .and_is(token.not())
-                .repeated()
-                .at_least(1)
-                .map_with(|_, e| (Token::Error, e.span())),
-        ))
-        .repeated()
-        .collect()
-        .then_ignore(comment.repeated())
-        .then_ignore(end())
-}
-
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Logos)]
+#[logos(skip r"[ \t\r\n]+")]
+#[logos(skip r"//[^\n]*")] // Skip comments
 pub enum Token<'src> {
+    #[regex(r"///[^\n]*", allow_greedy = true, callback = |lex| lex.slice().trim_start_matches("///"))]
     DocCommentLine(&'src str),
+    #[regex(r"[_\p{XID_Start}][\p{XID_Continue}-]*")]
+    #[regex(r"r#[_\p{XID_Start}][\p{XID_Continue}-]*", callback = |lex| lex.slice().trim_start_matches("r#"))]
     Ident(&'src str),
+    #[token("{")]
     CurlyOpen,
+    #[token("}")]
     CurlyClose,
+    #[token("[")]
     BracketOpen,
+    #[token("]")]
     BracketClose,
+    #[token("<")]
     AngleOpen,
+    #[token(">")]
     AngleClose,
+    #[token(",")]
     Comma,
+    #[token(":")]
     Colon,
+    #[token("->")]
     Arrow,
+    #[token("by")]
     By,
+    #[token("try")]
     Try,
+    #[token("as")]
     As,
+    #[token("allow")]
     Allow,
+    #[token("default")]
     Default,
+    #[token("catch-all")]
     CatchAll,
-    Num(i128),
+    #[regex(r"-?0b_*[01][_01]*")] // Binary
+    #[regex(r"-?0o_*[0-7][_0-7]*")] // Octal
+    #[regex(r"-?[0-9][_0-9]*")] // Decimal
+    #[regex(r"-?0x_*[0-9a-fA-F][_0-9a-fA-F]*")] // Hex
+    Num(&'src str),
+    #[token("RW", |_| Access::RW)]
+    #[token("RO", |_| Access::RO)]
+    #[token("WO", |_| Access::WO)]
     Access(Access),
+    #[token("BE", |_| ByteOrder::BE)]
+    #[token("LE", |_| ByteOrder::LE)]
     ByteOrder(ByteOrder),
+    #[token("lsb0", |_| BitOrder::Lsb0)]
+    #[token("msb0", |_| BitOrder::Msb0)]
     BitOrder(BitOrder),
+    #[token("uint", |_| BaseType::Uint)]
+    #[token("u8", |_| BaseType::U8)]
+    #[token("u16", |_| BaseType::U16)]
+    #[token("u32", |_| BaseType::U32)]
+    #[token("u64", |_| BaseType::U64)]
+    #[token("int", |_| BaseType::Int)]
+    #[token("i8", |_| BaseType::I8)]
+    #[token("i16", |_| BaseType::I16)]
+    #[token("i32", |_| BaseType::I32)]
+    #[token("i64", |_| BaseType::I64)]
+    #[token("bool", |_| BaseType::Bool)]
     BaseType(BaseType),
     Error,
 }
@@ -224,7 +129,7 @@ impl<'src> Display for Token<'src> {
 impl<'src> Token<'src> {
     fn get_human_string(&self) -> Cow<'static, str> {
         match self {
-            Token::DocCommentLine(line) => format!("/// {line}").into(),
+            Token::DocCommentLine(line) => format!("///{line}").into(),
             Token::Ident(ident) => format!("#{ident}").into(),
             Token::CurlyOpen => "{".into(),
             Token::CurlyClose => "}".into(),
@@ -253,7 +158,8 @@ impl<'src> Token<'src> {
     /// New line before, new line after, indent change
     fn get_print_format(&self) -> (bool, bool, i32) {
         match self {
-            Token::DocCommentLine(_) | Token::Comma => (false, true, 0),
+            Token::DocCommentLine(_) => (true, true, 0),
+            Token::Comma => (false, true, 0),
             Token::CurlyOpen | Token::BracketOpen => (false, true, 1),
             Token::CurlyClose | Token::BracketClose => (true, false, -1),
             _ => (false, false, 0),
@@ -290,8 +196,6 @@ impl<'src> Token<'src> {
 #[cfg(test)]
 mod tests {
     use std::io::stdout;
-
-    use ariadne::{Label, Report, Source};
 
     use super::*;
 
@@ -337,12 +241,12 @@ device Foo {
 
     #[test]
     fn test_lexer() {
-        println!("Token size: {}", std::mem::size_of::<Spanned<Token>>());
+        println!("Token size: {}", std::mem::size_of::<Token>());
 
-        let code = CODE;
+        let code = CODE.to_string() + CODE + CODE + CODE + CODE + CODE + CODE + CODE;
 
         let start = std::time::Instant::now();
-        let output = super::lexer().parse(&code);
+        let output = super::Token::lexer(&code).collect::<Vec<_>>();
         let elapsed = start.elapsed();
         println!("{elapsed:?} for {} bytes", code.len());
         println!(
@@ -350,25 +254,13 @@ device Foo {
             code.len() as f64 / elapsed.as_secs_f64() / 1024.0 / 1024.0
         );
 
-        for error in output.errors() {
-            let mut error_string = Vec::new();
-            Report::build(
-                ariadne::ReportKind::Error,
-                ("input.ddlang", error.span().into_range()),
-            )
-            .with_message(error)
-            .with_label(
-                Label::new(("input.ddlang", error.span().into_range())).with_message("Here"),
-            )
-            .finish()
-            .write(("input.ddlang", Source::from(CODE)), &mut error_string)
-            .unwrap();
-            eprintln!("{}", std::str::from_utf8(&error_string).unwrap())
-        }
-
-        if let Some(output) = output.output() {
-            let mut stdout = stdout().lock();
-            Token::formatted_print(&mut stdout, output.iter().map(|(token, _)| token)).unwrap();
-        }
+        let mut stdout = stdout().lock();
+        Token::formatted_print(
+            &mut stdout,
+            output
+                .iter()
+                .map(|maybe_token| maybe_token.as_ref().unwrap_or(&Token::Error)),
+        )
+        .unwrap();
     }
 }

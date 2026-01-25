@@ -1,7 +1,7 @@
 use std::fmt::Display;
 
 pub mod lexer;
-pub mod parser;
+// pub mod parser;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Access {
