@@ -1,34 +1,13 @@
 #![expect(clippy::from_str_radix_10, reason = "Other radixes are used")]
 
-use std::{borrow::Cow, fmt::Display};
+use std::{borrow::Cow, fmt::Display, num::IntErrorKind};
 
 use logos::Logos;
 
 use crate::{Access, BaseType, BitOrder, ByteOrder};
 
-// fn parse_num(slice: &str) -> Result<i128, Error> {
-//     let (multiplier, positive) = slice
-//         .strip_prefix('-')
-//         .map(|rest| (-1, rest))
-//         .unwrap_or((1, slice));
-
-//     let pos_num = if let Some(num_slice) = positive.strip_prefix("0b") {
-//         i128::from_str_radix(&num_slice.replace('_', ""), 2)
-//     } else if let Some(num_slice) = positive.strip_prefix("0o") {
-//         i128::from_str_radix(&num_slice.replace('_', ""), 8)
-//     } else if let Some(num_slice) = positive.strip_prefix("0x") {
-//         i128::from_str_radix(&num_slice.replace('_', ""), 16)
-//     } else {
-//         i128::from_str_radix(&positive.replace('_', ""), 10)
-//     };
-
-//     pos_num
-//         .map(|n| n * multiplier)
-//         .map_err(Error::ParseIntError)
-// }
-
-#[derive(Debug, Clone, PartialEq, Logos)]
-#[logos(skip r"[ \t\r\n]+")]
+#[derive(Debug, Clone, Copy, PartialEq, Logos)]
+#[logos(skip r"[ \t\r\n]+")] // Skip (common) whitespace
 #[logos(skip r"//[^\n]*")] // Skip comments
 pub enum Token<'src> {
     #[regex(r"///[^\n]*", allow_greedy = true, callback = |lex| lex.slice().trim_start_matches("///"))]
@@ -191,6 +170,103 @@ impl<'src> Token<'src> {
 
         Ok(())
     }
+
+    pub fn parse_num<I: ParseIntRadix>(self) -> Result<I, ParseIntRadixError<'src>> {
+        let Token::Num(num_slice) = self else {
+            panic!("Token is not a number: `{:?}`", self);
+        };
+
+        let pos_num_slice = num_slice.trim_start_matches('-');
+        let (mut cleaned_num_slice, radix) = match &pos_num_slice.get(0..2) {
+            Some("0b") => (Cow::from(&pos_num_slice[2..]), 2),
+            Some("0o") => (Cow::from(&pos_num_slice[2..]), 8),
+            Some("0x") => (Cow::from(&pos_num_slice[2..]), 16),
+            _ => (Cow::from(pos_num_slice), 10),
+        };
+
+        if cleaned_num_slice.contains('_') {
+            cleaned_num_slice = cleaned_num_slice.replace("_", "").into();
+        }
+
+        if num_slice.starts_with('-') {
+            cleaned_num_slice = ("-".to_string() + &cleaned_num_slice).into();
+        }
+
+        I::parse(num_slice, &cleaned_num_slice, radix)
+    }
+}
+
+trait ParseIntRadix: Sized {
+    fn parse<'src>(
+        source: &'src str,
+        cleaned_num_slice: &str,
+        radix: u32,
+    ) -> Result<Self, ParseIntRadixError<'src>>;
+}
+
+macro_rules! impl_parse_int_radix {
+    ($int:ty) => {
+        impl ParseIntRadix for $int {
+            fn parse<'src>(
+                source: &'src str,
+                cleaned_num_slice: &str,
+                radix: u32,
+            ) -> Result<Self, ParseIntRadixError<'src>> {
+                Self::from_str_radix(cleaned_num_slice, radix).map_err(|e| {
+                    let kind = match e.kind() {
+                        IntErrorKind::PosOverflow => ParseIntRadixErrorKind::Overflow,
+                        IntErrorKind::NegOverflow => ParseIntRadixErrorKind::Underflow,
+                        _ => unreachable!(),
+                    };
+
+                    ParseIntRadixError {
+                        input_format: match radix {
+                            2 => NumFormat::Binary,
+                            8 => NumFormat::Octal,
+                            10 => NumFormat::Decimal,
+                            16 => NumFormat::Hexadecimal,
+                            _ => unreachable!(),
+                        },
+                        source,
+                        kind,
+                        target_bits: Self::BITS,
+                        target_signed: Self::MIN != 0,
+                    }
+                })
+            }
+        }
+    };
+}
+
+impl_parse_int_radix!(u8);
+impl_parse_int_radix!(u16);
+impl_parse_int_radix!(u32);
+impl_parse_int_radix!(u64);
+impl_parse_int_radix!(u128);
+impl_parse_int_radix!(i8);
+impl_parse_int_radix!(i16);
+impl_parse_int_radix!(i32);
+impl_parse_int_radix!(i64);
+impl_parse_int_radix!(i128);
+
+pub struct ParseIntRadixError<'src> {
+    pub input_format: NumFormat,
+    pub source: &'src str,
+    pub kind: ParseIntRadixErrorKind,
+    pub target_bits: u32,
+    pub target_signed: bool,
+}
+
+pub enum ParseIntRadixErrorKind {
+    Overflow,
+    Underflow,
+}
+
+pub enum NumFormat {
+    Binary,
+    Octal,
+    Decimal,
+    Hexadecimal,
 }
 
 #[cfg(test)]

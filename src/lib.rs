@@ -3,7 +3,7 @@ use std::fmt::Display;
 pub mod lexer;
 // pub mod parser;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Access {
     RW,
     RO,
@@ -22,7 +22,7 @@ impl Display for Access {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ByteOrder {
     BE,
     LE,
@@ -39,7 +39,7 @@ impl Display for ByteOrder {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BitOrder {
     Lsb0,
     Msb0,
@@ -56,7 +56,7 @@ impl Display for BitOrder {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BaseType {
     Uint,
     U8,
