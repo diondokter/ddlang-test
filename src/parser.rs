@@ -1,6 +1,9 @@
 use std::fmt::Display;
 
-use crate::{Access, BaseType, BitOrder, ByteOrder, lexer::Token};
+use crate::{
+    Access, BaseType, BitOrder, ByteOrder,
+    lexer::{ParseIntRadix, Token},
+};
 use chumsky::{input::ValueInput, prelude::*};
 
 pub type Span = SimpleSpan;
@@ -115,7 +118,7 @@ impl<'src> Property<'src> {
 pub enum Expression<'src> {
     Range { end: i128, start: i128 },
     Repeat(Repeat<'src>),
-    ResetNumber(i128),
+    ResetNumber(u128),
     ResetArray(Vec<u8>),
     BaseType(BaseType),
     Allow,
@@ -162,12 +165,12 @@ impl<'src> Display for Expression<'src> {
 #[derive(Debug)]
 pub struct Repeat<'src> {
     pub source: RepeatSource<'src>,
-    pub stride: i128,
+    pub stride: i32,
 }
 
 #[derive(Debug)]
 pub enum RepeatSource<'src> {
-    Count(i128),
+    Count(u32),
     Enum(Ident<'src>),
 }
 
@@ -175,6 +178,16 @@ pub enum RepeatSource<'src> {
 pub struct Ident<'src> {
     pub val: &'src str,
     pub span: Span,
+}
+
+fn try_num<'tokens, 'src: 'tokens, I: ParseIntRadix>(
+    num_token: Token<'src>,
+    span: Span,
+) -> Result<I, Rich<'tokens, Token<'src>>> {
+    match num_token.parse_num::<I>() {
+        Ok(num) => Ok(num),
+        Err(_e) => Err(Rich::custom(span, "Oh no!")),
+    }
 }
 
 pub fn parser<'tokens, 'src: 'tokens, I>()
@@ -195,20 +208,26 @@ where
         .labelled("'doc comment'");
 
         let any_num = select! {
-            Token::Num(val) => val
+            num @ Token::Num(_) => num
         }
         .labelled("'number'");
 
         let range = any_num
+            .try_map(try_num::<i128>)
             .then_ignore(just(Token::Colon))
-            .then(any_num)
+            .then(any_num.try_map(try_num::<i128>))
             .map(|(end, start)| Expression::Range { end, start })
             .labelled("'range'");
         let any_base_type = select! { Token::BaseType(bt) => bt }.labelled("'base type'");
         let repeat_expression = any_num
+            .try_map(try_num::<u32>)
             .map(RepeatSource::Count)
             .or(any_ident.map(RepeatSource::Enum))
-            .then(just(Token::By).ignore_then(any_num).or_not())
+            .then(
+                just(Token::By)
+                    .ignore_then(any_num.try_map(try_num::<i32>))
+                    .or_not(),
+            )
             .map(|(source, stride)| {
                 Expression::Repeat(Repeat {
                     source,
@@ -219,6 +238,7 @@ where
             .labelled("'<repeat>'")
             .boxed();
         let reset_expression = any_num
+            .try_map(try_num::<u128>)
             .map_with(|num, extra| (num, extra.span()))
             .separated_by(just(Token::Comma))
             .allow_trailing()
@@ -250,13 +270,13 @@ where
         let expression = choice((
             range,
             any_base_type.map(Expression::BaseType),
-            any_num.map(Expression::Number),
+            any_num.try_map(try_num::<i128>).map(Expression::Number),
             just(Token::Default)
-                .ignore_then(any_num)
+                .ignore_then(any_num.try_map(try_num::<i128>))
                 .map(Expression::DefaultNumber)
                 .labelled("'default number'"),
             just(Token::CatchAll)
-                .ignore_then(any_num)
+                .ignore_then(any_num.try_map(try_num::<i128>))
                 .map(Expression::CatchAllNumber)
                 .labelled("'catch-all number'"),
             repeat_expression,
@@ -352,6 +372,7 @@ where
 #[cfg(test)]
 mod tests {
     use ariadne::{Label, Report, Source};
+    use logos::Logos;
 
     use super::*;
 
@@ -400,11 +421,30 @@ device Foo {
         println!("Node size: {}", std::mem::size_of::<Spanned<Node>>());
 
         let start = std::time::Instant::now();
-        let (tokens, errors) = crate::lexer::lexer().parse(CODE).into_output_errors();
+        let tokens = super::Token::lexer(CODE)
+            .spanned()
+            .map(|(t, span)| match t {
+                Ok(token) => (token, span.into()),
+                Err(_) => (Token::Error, span.into()),
+            })
+            .collect::<Vec<_>>();
         let elapsed = start.elapsed();
         println!("Lexing: {elapsed:?}");
 
-        for error in errors {
+        let start = std::time::Instant::now();
+
+        let (ast, parse_errs) = super::parser()
+            .map_with(|ast, e| (ast, e.span()))
+            .parse(
+                tokens
+                    .as_slice()
+                    .map((CODE.len()..CODE.len()).into(), |(t, s)| (t, s)),
+            )
+            .into_output_errors();
+        let elapsed = start.elapsed();
+        println!("Parsing: {elapsed:?}");
+
+        for error in parse_errs {
             let mut error_string = Vec::new();
             Report::build(
                 ariadne::ReportKind::Error,
@@ -420,40 +460,9 @@ device Foo {
             eprintln!("{}", std::str::from_utf8(&error_string).unwrap())
         }
 
-        if let Some(tokens) = tokens {
-            let start = std::time::Instant::now();
-
-            let (ast, parse_errs) = super::parser()
-                .map_with(|ast, e| (ast, e.span()))
-                .parse(
-                    tokens
-                        .as_slice()
-                        .map((CODE.len()..CODE.len()).into(), |(t, s)| (t, s)),
-                )
-                .into_output_errors();
-            let elapsed = start.elapsed();
-            println!("Parsing: {elapsed:?}");
-
-            for error in parse_errs {
-                let mut error_string = Vec::new();
-                Report::build(
-                    ariadne::ReportKind::Error,
-                    ("input.ddlang", error.span().into_range()),
-                )
-                .with_message(&error)
-                .with_label(
-                    Label::new(("input.ddlang", error.span().into_range())).with_message("Here"),
-                )
-                .finish()
-                .write(("input.ddlang", Source::from(CODE)), &mut error_string)
-                .unwrap();
-                eprintln!("{}", std::str::from_utf8(&error_string).unwrap())
-            }
-
-            if let Some((nodes, _)) = ast {
-                for node in nodes {
-                    println!("{node}");
-                }
+        if let Some((nodes, _)) = ast {
+            for node in nodes {
+                println!("{node}");
             }
         }
     }

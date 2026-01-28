@@ -196,7 +196,7 @@ impl<'src> Token<'src> {
     }
 }
 
-trait ParseIntRadix: Sized {
+pub trait ParseIntRadix: Sized {
     fn parse<'src>(
         source: &'src str,
         cleaned_num_slice: &str,
