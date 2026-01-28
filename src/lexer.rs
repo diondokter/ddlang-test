@@ -319,15 +319,13 @@ device Foo {
     fn test_lexer() {
         println!("Token size: {}", std::mem::size_of::<Token>());
 
-        let code = CODE.to_string() + CODE + CODE + CODE + CODE + CODE + CODE + CODE;
-
         let start = std::time::Instant::now();
-        let output = super::Token::lexer(&code).collect::<Vec<_>>();
+        let output = super::Token::lexer(CODE).collect::<Vec<_>>();
         let elapsed = start.elapsed();
-        println!("{elapsed:?} for {} bytes", code.len());
+        println!("{elapsed:?} for {} bytes", CODE.len());
         println!(
             "{} MB/s",
-            code.len() as f64 / elapsed.as_secs_f64() / 1024.0 / 1024.0
+            CODE.len() as f64 / elapsed.as_secs_f64() / 1024.0 / 1024.0
         );
 
         let mut stdout = stdout().lock();
